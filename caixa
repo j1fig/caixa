@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+from collections import defaultdict
+from datetime import datetime
+from typing import NamedTuple
+import argparse
+import csv
+
+
+class InvalidIndex(Exception):
+    pass
+
+
+class InvalidSortKey(Exception):
+    pass
+
+
+def _date_parser(text):
+    return datetime.strptime(text, "%d-%m-%Y").date()
+
+
+def _number_parser(text):
+    coerced_text = text.replace(".", "").replace(",", ".")
+    return float(coerced_text) if coerced_text != "" else 0.0
+
+
+def _text_parser(text):
+    return text.strip()
+
+
+_BANK_TRANSACTION_SCHEMA = (
+    ("transaction_date", _date_parser),
+    ("value_date", _date_parser),
+    ("description", _text_parser),
+    ("debit", _number_parser),
+    ("credit", _number_parser),
+    ("account_balance", _number_parser),
+    ("available_balance", _number_parser),
+    ("category", _text_parser),
+)
+
+
+def _parse_bank_transactions(filepath):
+    with open(filepath, encoding="iso-8859-1") as f:
+        reader = csv.reader(f, delimiter="\t")
+        transactions = []
+        rows = [row for row in reader]
+        # header is 7 lines long.
+        # last line is a summary line.
+        for r in rows[7:-1]:
+            transactions.append(
+                {s[0]: s[1](t) for s, t in zip(_BANK_TRANSACTION_SCHEMA, r)}
+            )
+        return transactions
+
+
+def _make_dom_index(transactions):
+    index = defaultdict(dict)
+    day_of_month = range(1, 32)
+    for d in day_of_month:
+        txs = [t for t in transactions if d == t["transaction_date"].day]
+        index[d]["debit.sum"] = round(sum(t["debit"] for t in txs), 2) if txs else 0.0
+        index[d]["debit.avg"] = round(sum(t["debit"] for t in txs) / len(txs), 2) if txs else 0.0
+        index[d]["credit.sum"] = round(sum(t["credit"] for t in txs), 2) if txs else 0.0
+        index[d]["credit.avg"] = (
+            round(sum(t["credit"] for t in txs) / len(txs), 2) if txs else 0.0
+        )
+        index[d]["entities"] = set(t["description"] for t in txs) if txs else None
+    return index
+
+
+def _make_month_index(transactions):
+    index = defaultdict(dict)
+    months = range(1, 13)
+    for m in months:
+        txs = [t for t in transactions if m == t["transaction_date"].month]
+        index[m]["debit.sum"] = round(sum(t["debit"] for t in txs), 2) if txs else 0.0
+        index[m]["debit.avg"] = round(sum(t["debit"] for t in txs) / len(txs), 2) if txs else 0.0
+        index[m]["credit.sum"] = round(sum(t["credit"] for t in txs), 2) if txs else 0.0
+        index[m]["credit.avg"] = (
+            round(sum(t["credit"] for t in txs) / len(txs), 2) if txs else 0.0
+        )
+        index[m]["entities"] = set(t["description"] for t in txs) if txs else None
+    return index
+
+
+def _make_entity_index(transactions):
+    index = defaultdict(dict)
+    entities = set(t["description"] for t in transactions)
+    for e in entities:
+        txs = [t for t in transactions if e == t["description"]]
+        index[e]["debit.sum"] = round(sum(t["debit"] for t in txs), 2) if txs else 0.0
+        index[e]["debit.avg"] = round(sum(t["debit"] for t in txs) / len(txs), 2) if txs else 0.0
+        index[e]["credit.sum"] = round(sum(t["credit"] for t in txs), 2) if txs else 0.0
+        index[e]["credit.avg"] = (
+            round(sum(t["credit"] for t in txs) / len(txs), 2) if txs else 0.0
+        )
+        index[e]["days_of_month"] = (
+            set(t["transaction_date"].day for t in txs) if txs else None
+        )
+        index[e]["months"] = (
+            set(t["transaction_date"].month for t in txs) if txs else None
+        )
+        index[e]["count"] = len(txs)
+    return index
+
+
+def _make_transaction_index(transactions):
+    return {
+        "dom": _make_dom_index(transactions),
+        "month": _make_month_index(transactions),
+        "entity": _make_entity_index(transactions),
+    }
+
+
+def _run(args):
+    transactions = _parse_bank_transactions(args.file)
+    index = _make_transaction_index(transactions)
+    try:
+        ix = index[args.index].items()
+    except KeyError:
+        raise InvalidIndex
+
+    if args.sort:
+        try:
+            ix = sorted(ix, key=lambda v: v[1][args.sort], reverse=args.descending)
+	    # if we're sorting by a key, we're not interested in the other keys.
+            ix = [
+                (k, {key: value for key, value in v.items() if key == args.sort})
+                for k, v in ix
+            ]
+	    # if we're sorting by a key, we're not interested in null / zero values.
+            ix = [(k, v) for k, v in ix if v[args.sort] not in (0.0, None)]
+        except KeyError:
+            raise InvalidSortKey
+    for k, agg in ix:
+        for a, v in agg.items():
+            if args.sort:
+                # if sorting by a key, its redundant to print the key.
+                print(f"[{k}] {v}")
+            else:
+                print(f"[{k}] {a}\t{v}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file", help="TSV filename with bank transactions.")
+    parser.add_argument("index", help="index you wish to access.")
+    parser.add_argument(
+        "--sort",
+        "-s",
+        help="aggregation you wish to sort by.",
+    )
+    parser.add_argument(
+        "--descending", "-d", type=bool, default=True, help="sort by descending order."
+    )
+    args = parser.parse_args()
+    _run(args)
